@@ -1,0 +1,155 @@
+#!flask/bin/python
+
+from flask import Flask
+from flask import jsonify
+from flask import abort
+from flask import make_response
+from flask import request 
+from apscheduler.schedulers.background import BackgroundScheduler
+import os
+import subprocess
+import time
+
+
+app = Flask(__name__)
+scheduler = BackgroundScheduler()
+scheduler.start()
+tasks = []
+task = { 'id': 1 } 
+tasks.append(task)
+
+## Return Error 
+@app.errorhandler(404)
+
+def not_found(error):
+    return make_response(jsonify({'error': 'Not found'}),404)
+
+@app.errorhandler(503)
+
+def server_busy(error):
+    return make_response(jsonify({'error': 'Server Busy'}), 503)
+    
+
+
+@scheduler.scheduled_job('interval', seconds=2)
+##  Clean task if process end 
+def clean_task():
+      global tasks
+      print "clearing task table"
+      print len(tasks),tasks
+      for i, task in enumerate(tasks[1:],start=1):
+         #if task['id'] == 1:
+         #    print "skip id 1"
+         #    continue
+         print "inside loop"
+         print i,"task_pid", task['pid']
+         pid_not_found  = subprocess.Popen("ps -ef | awk '$2 ~ /%s/ && !/awk/'" % task['pid'], shell=True, stdout=subprocess.PIPE).communicate()[0]
+         print "pid_not_found:", pid_not_found
+         if not pid_not_found:
+             #print task
+             tasks.remove(task)
+             continue
+             #tasks.remove(task)
+             print tasks
+             print "task has been removed"
+             scheduler.remove_all_jobs()
+
+
+## Get tasks
+
+@app.route('/todo/api/v1.0/tasks/<int:task_id>',methods=['GET'])
+
+def get_tasks(task_id):
+    """ Return  running task, 
+        if there is no running task then 
+        return not found"""
+    task = [ task for task in tasks if task['id'] == task_id ]
+    if len(task) == 0:
+       abort(404)
+    return jsonify({'task': task[0]}) 
+
+
+
+## Run command
+
+def command(cmd):
+     # Run cmd in background
+     #cmd = cmd.split()
+     #proc = subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,shell=True,close_fds=True)
+     #proc.communicate()
+     #pid = proc.pid
+     # Get pid details
+     cmd = cmd + " & echo $! > /tmp/pid"
+     os.system(cmd)
+     pid = open("/tmp/pid").read().strip()
+     status = subprocess.Popen("ps -ef | awk '/%s/ && !/awk/'" % pid, shell=True, 
+                   stdout=subprocess.PIPE).communicate()[0].strip() 
+    
+     return pid,status
+
+
+
+## Create Task 
+
+@app.route('/todo/api/v1.0/tasks',methods=['POST'])
+
+def create_task():
+    if not request.json or not 'env' in request.json:
+       abort(400)
+    env = request.json['env']
+    if not 'parser' and not 'fetcher' in request.json:
+       abort(400)
+
+    if not 'parser' in request.json: 
+        parser = 0 
+    else: 
+        parser = request.json['parser']
+
+    if not 'fetcher' in request.json:
+        fetcher = 0
+    else:
+        fetcher = request.json['fetcher']
+
+
+    # if task already running then return 503 server busy
+    #for r in tasks:
+    #    # if only 1 task ir running then skip checking 
+    #    if len(tasks) == 1:
+    #        continue
+    #    # check parser and fetcher is running in same env  
+    #    if r['parser'] > 0 and r['fetcher'] > 0:
+    #        e = [ e for e in tasks if r['env'] == env ]
+    #        if len(e) > 1:
+    #          abort(503)
+       # # if only parser is alredy running 
+       # elif r[task['parser']] > 0 and len(r[task['env']]) > 1:
+       #   abort(503)
+       # # if only fetcher is already running 
+       # elif r[task['fetcher']] > 0 and len(r[task['env']]) > 1:
+       #   abort(503)
+
+    #if len(tasks) > 0:
+    #      abort(503)
+    # increment id 
+    #if len(tasks) >= 1:
+    #    id = id + 1
+    #else:
+    #    id = 1 
+
+    pid, status = command("sleep 60") 
+    task = {
+        'id': tasks[-1]['id'] + 1,
+        'pid': pid,
+        'env': request.json['env'],
+        'parser': parser,
+        'fetcher': fetcher,
+        'status': status 
+    }
+    tasks.append(task)
+    scheduler.add_job(clean_task,'interval',seconds=3)
+    return jsonify({'task':task}), 201
+
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
